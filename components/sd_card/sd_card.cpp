@@ -67,6 +67,7 @@ void SdCard::setup() {
   auto ret = esp_vfs_fat_sdmmc_mount(MOUNT_POINT.c_str(), &host, &slot_config, &mount_config, &this->card_);
 
   if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "esp_vfs_fat_sdmmc_mount failed: %s (0x%x)", esp_err_to_name(ret), ret);
     if (ret == ESP_FAIL) {
       this->init_error_ = ErrorCode::ERR_MOUNT;
     } else {
