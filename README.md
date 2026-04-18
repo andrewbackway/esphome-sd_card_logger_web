@@ -26,7 +26,7 @@ Add the external components to your ESPHome YAML:
 
 ```yaml
 external_components:
-  - source: github://andrewbackway/esphome-sd_card_web
+  - source: github://andrewbackway/esphome-sd_card_logger_web
     components: [sd_card, sd_logger, webserver_sd]
 ```
 

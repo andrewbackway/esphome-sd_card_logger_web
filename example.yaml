@@ -17,7 +17,7 @@ esp32:
       CONFIG_FATFS_LFN: "2"        # 2 = heap allocation mode (1 = stack)
 
 external_components:
-  - source: github://andrewbackway/esphome-sd_card_web
+  - source: github://andrewbackway/esphome-sd_card_logger_web
     components: [sd_card, sd_logger, webserver_sd]
 
 logger:
@@ -35,7 +35,7 @@ time:
       - pool.ntp.org
 
 sd_card:
-  id: sd_card1
+  id: sd_card_1
   cmd_pin: 11   # MOSI / CMD
   clk_pin: 12   # SCK  (onboard TF slot)
   data0_pin: 13 # MISO / DATA0
@@ -46,7 +46,7 @@ web_server:
 
 webserver_sd:
   id: file_server
-  sd_card_id: sd_card1
+  sd_card_id: sd_card_1
   url_prefix: "file"
   root_path: "/"
   enable_deletion: true
@@ -55,24 +55,23 @@ webserver_sd:
 
 sd_logger:
   id: logger
-  sd_card_id: sd_card1
+  sd_card_id: sd_card_1
   time_id: sntp_time
   queue_size: 50       # max packets buffered before drops
   task_priority: 1     # FreeRTOS priority (0 = lowest)
-  # Cloud upload — remove these keys to disable the upload task entirely
-  upload_url: "https://example.com/api/upload"
-  bearer_token: !secret upload_token
-  ping_url: "https://example.com/ping"
-  ping_interval: 30s
-  ping_timeout: 5s
-  backoff_initial: 30s
+  # Cloud upload (experimental) — remove these keys to disable the upload task entirely
+  # upload_url: "https://example.com/api/upload"
+  # bearer_token: !secret upload_token
+  # ping_url: "https://example.com/ping"
+  # ping_interval: 30s
+  # ping_timeout: 5s
+  # backoff_initial: 30s
   backoff_max: 15min
   sync_online:
     name: "Cloud Sync Online"
   sync_sending_backlog:
     name: "Cloud Sync Backlog"
   logs:
-    # ── Engine RPM + vehicle speed in one daily CSV ────────────────────────────
     - name: "Vehicle Data"
       folder: "vehicle"
       file_prefix: "vehicle"
@@ -85,7 +84,6 @@ sd_logger:
           format: "%.1f"
         - sensor_id: gear_pos    # text sensor — format ignored
 
-    # ── Gear changes only — size rotation, 10 MB per file ─────────────────────
     - name: "Gear Log"
       folder: "gear"
       file_prefix: "gear"
@@ -95,9 +93,7 @@ sd_logger:
       sensors:
         - sensor_id: gear_pos
 
-# ── Sensors ───────────────────────────────────────────────────────────────────
 sensor:
-  # Simulated engine RPM — replace with your real sensor (e.g. pulse_counter)
   - platform: template
     id: engine_rpm
     name: "Engine RPM"
@@ -106,7 +102,6 @@ sensor:
     update_interval: 500ms
     lambda: "return (float)(millis() % 6000);"
 
-  # Simulated vehicle speed — replace with your real sensor
   - platform: template
     id: vehicle_speed
     name: "Vehicle Speed"
@@ -115,7 +110,6 @@ sensor:
     update_interval: 500ms
     lambda: "return (float)((millis() / 1000) % 120);"
 
-  # Heap monitor — useful for T4/T13 non-blocking tests
   - platform: template
     name: "Free Heap"
     unit_of_measurement: "B"
@@ -123,23 +117,22 @@ sensor:
     update_interval: 5s
     lambda: "return (float)esp_get_free_heap_size();"
 
-  # SD card used space
   - platform: sd_card
-    sd_card_id: sd_card
+    sd_card_id: sd_card_1
     type: used_space
     name: "SD Used (GB)"
     filters:
       - lambda: return (float)sd_card::convertBytes((uint64_t)x, sd_card::MemoryUnits::GigaByte);
 
   - platform: sd_card
-    sd_card_id: sd_card
+    sd_card_id: sd_card_1
     type: total_space
     name: "SD Card Capacity (GB)"
     filters:
       - lambda: return (float)sd_card::convertBytes((uint64_t)x, sd_card::MemoryUnits::GigaByte);
 
   - platform: sd_card
-    sd_card_id: sd_card
+    sd_card_id: sd_card_1
     type: free_space
     name: "SD Card Remaining (GB)"
     filters:
@@ -157,12 +150,11 @@ text_sensor:
 
   # SD card type
   - platform: sd_card
-    sd_card_id: sd_card
+    sd_card_id: sd_card_1
     sd_card_type:
       name: "SD Card Type"
 
 binary_sensor:
   - platform: template
     name: "SD Card Present"
-    lambda: "return id(sd_card).is_directory(\"/\");"
-
+    lambda: "return id(sd_card_1).is_directory(\"/\");"
