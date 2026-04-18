@@ -30,14 +30,27 @@ static const char* TAG = "sd_file_server";
 // ---------------------------------------------------------------------------
 struct SdIoTaskArgs {
   httpd_req_t *req;          // httpd request handle (safe: httpd task is blocked)
-  int          file_fd;      // POSIX fd for the SD file
+  int          file_fd;      // POSIX fd for the SD file (download)
+  const char  *path;         // absolute path on SD (upload opens within task)
   SemaphoreHandle_t done_sem;
   bool         ok;
 };
 
-// ---- Upload: httpd_req_recv() → write() to SD ----
+// ---- Upload: open() + httpd_req_recv() → write() to SD ----
+// The file is opened HERE (not in the httpd handler) so that the deep
+// VFS → FatFS → SDMMC call chain for open() also runs on this task's
+// stack rather than the shallow httpd stack.
 static void upload_recv_write_task(void *arg) {
   auto *a = static_cast<SdIoTaskArgs *>(arg);
+
+  int fd = open(a->path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
+    ESP_LOGE("sd_upload", "open failed for '%s' (errno %d)", a->path, errno);
+    a->ok = false;
+    xSemaphoreGive(a->done_sem);
+    vTaskDelete(nullptr);
+    return;
+  }
 
   static constexpr size_t CHUNK       = 1460;       // TCP MSS
   static constexpr size_t YIELD_EVERY = 16 * 1024;
@@ -45,6 +58,7 @@ static void upload_recv_write_task(void *arg) {
   uint8_t *buf = static_cast<uint8_t *>(
       heap_caps_malloc(CHUNK, MALLOC_CAP_INTERNAL));
   if (!buf) {
+    close(fd);
     a->ok = false;
     xSemaphoreGive(a->done_sem);
     vTaskDelete(nullptr);
@@ -59,7 +73,7 @@ static void upload_recv_write_task(void *arg) {
   // the full Content-Length has been consumed.  This keeps httpd state
   // consistent so httpd_resp_send() works correctly afterward.
   while ((n = httpd_req_recv(a->req, reinterpret_cast<char *>(buf), CHUNK)) > 0) {
-    if (write(a->file_fd, buf, static_cast<size_t>(n)) != n) {
+    if (write(fd, buf, static_cast<size_t>(n)) != n) {
       ESP_LOGE("sd_upload", "write error (errno %d)", errno);
       ok = false;
       break;
@@ -76,8 +90,8 @@ static void upload_recv_write_task(void *arg) {
   }
 
   heap_caps_free(buf);
-  fsync(a->file_fd);
-  close(a->file_fd);  // httpd task must NOT close it again
+  fsync(fd);
+  close(fd);
   a->ok = ok;
 
   xSemaphoreGive(a->done_sem);
@@ -192,18 +206,10 @@ void SDFileServer::handle_upload(AsyncWebServerRequest *request) {
 
   std::string abs_path = this->sd_card_->build_path(path);
 
-  int fd = open(abs_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (fd < 0) {
-    ESP_LOGE(TAG, "handle_upload: open failed for '%s' (errno %d)", abs_path.c_str(), errno);
-    request->send(500, "application/json", "{ \"error\": \"failed to open file for writing\" }");
-    return;
-  }
-
   httpd_req_t *req_h = static_cast<httpd_req_t *>(*request);
 
   SemaphoreHandle_t done_sem = xSemaphoreCreateBinary();
   if (!done_sem) {
-    close(fd);
     request->send(503, "application/json", "{ \"error\": \"out of memory\" }");
     return;
   }
@@ -211,25 +217,24 @@ void SDFileServer::handle_upload(AsyncWebServerRequest *request) {
   auto *args = static_cast<SdIoTaskArgs *>(malloc(sizeof(SdIoTaskArgs)));
   if (!args) {
     vSemaphoreDelete(done_sem);
-    close(fd);
     request->send(503, "application/json", "{ \"error\": \"out of memory\" }");
     return;
   }
 
   args->req         = req_h;
-  args->file_fd     = fd;
+  args->file_fd     = -1;    // not used for upload
+  args->path        = abs_path.c_str();  // valid while we block on semaphore
   args->done_sem    = done_sem;
   args->ok          = false;
 
-  // Offload recv+write to a dedicated task with its own stack.
+  // Offload open+recv+write+close to a dedicated task with its own stack.
   // The httpd task itself stays shallow (blocked on semaphore), so the deep
-  // FatFS/SDMMC write chain never touches the 4352-byte httpd stack.
+  // VFS → FatFS → SDMMC call chain never touches the 4352-byte httpd stack.
   // Pinned to core 0 to avoid contending with the ESPHome main loop on core 1.
   if (xTaskCreatePinnedToCore(upload_recv_write_task, "sd_upload",
                                6144, args, 5, nullptr, 0) != pdPASS) {
     free(args);
     vSemaphoreDelete(done_sem);
-    close(fd);
     request->send(503, "application/json", "{ \"error\": \"failed to create upload task\" }");
     return;
   }
@@ -241,7 +246,6 @@ void SDFileServer::handle_upload(AsyncWebServerRequest *request) {
   const size_t total = req_h->content_len;
   free(args);
   vSemaphoreDelete(done_sem);
-  // fd was already closed by upload_recv_write_task — do NOT close here.
 
   if (!ok) {
     unlink(abs_path.c_str());
