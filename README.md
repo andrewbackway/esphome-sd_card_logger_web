@@ -41,13 +41,16 @@ esp32:
     sdkconfig_options:
       CONFIG_FATFS_LFN_HEAP: "y"
       CONFIG_FATFS_LFN: "2"
+      CONFIG_FATFS_FS_EXFAT: "y"  # required for SDXC cards (32 GB+); FAT32 still works
 ```
 
 ---
 
 ## `sd_card`
 
-Drives the onboard SDMMC peripheral using the ESP-IDF native driver. Mounts the card as a FAT32 volume at `/sdcard`.
+Drives the onboard SDMMC peripheral using the ESP-IDF native driver. Mounts the card at `/sdcard`. Supports **FAT32** and **exFAT** — the driver detects the format automatically on mount.
+
+> **Large SD cards (32 GB+):** Cards 32 GB and larger are SDXC and are typically formatted as exFAT by default. Windows cannot natively format drives larger than 32 GB as FAT32. Use the [SD Memory Card Formatter](https://www.sdcard.org/downloads/formatter/) utility from the SD Association — it applies the correct format and cluster size for your card capacity.
 
 ### Wiring — LOLIN S3 Pro (onboard TF slot)
 

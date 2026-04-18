@@ -15,6 +15,7 @@ esp32:
     sdkconfig_options:
       CONFIG_FATFS_LFN_HEAP: "y"   # heap-allocate LFN buffer, keeps task stacks safe
       CONFIG_FATFS_LFN: "2"        # 2 = heap allocation mode (1 = stack)
+      CONFIG_FATFS_FS_EXFAT: "y"  # exFAT support for SDXC cards (>= 32 GB); FAT32 still works
 
 external_components:
   - source: github://andrewbackway/esphome-sd_card_logger_web

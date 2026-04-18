@@ -80,6 +80,10 @@ async def to_code(config):
     # ff.c raises #error if FF_MAX_LFN is undefined.
     cg.add_build_flag("-DCONFIG_FATFS_LFN_HEAP=1")
     cg.add_build_flag("-DCONFIG_FATFS_MAX_LFN=255")
+    # exFAT support: required for SDXC cards (>= 32 GB). When enabled, the FATFS
+    # driver auto-detects FAT32 vs exFAT on mount, so both formats work.
+    # FF_FS_EXFAT requires FF_USE_LFN >= 1 (already satisfied above).
+    cg.add_build_flag("-DCONFIG_FATFS_FS_EXFAT=1")
 
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
