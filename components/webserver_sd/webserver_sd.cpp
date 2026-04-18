@@ -9,6 +9,9 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
+
+#include <sys/socket.h>
 
 #include "esp_heap_caps.h"
 
@@ -21,6 +24,73 @@ namespace esphome {
 namespace webserver_sd {
 
 static const char* TAG = "sd_file_server";
+
+// ---------------------------------------------------------------------------
+// Upload task: recv body from socket + write to SD, all in its own stack.
+// The httpd task stays shallow (blocked on semaphore) while this runs.
+// ---------------------------------------------------------------------------
+struct UploadTaskArgs {
+  int sockfd;
+  int file_fd;
+  size_t content_len;
+  SemaphoreHandle_t done_sem;
+  bool ok;
+};
+
+static void upload_recv_write_task(void *arg) {
+  auto *a = static_cast<UploadTaskArgs *>(arg);
+
+  static constexpr size_t CHUNK      = 1460;
+  static constexpr size_t YIELD_EVERY = 16 * 1024;
+
+  uint8_t *buf = static_cast<uint8_t *>(
+      heap_caps_malloc(CHUNK, MALLOC_CAP_INTERNAL));
+  if (!buf) {
+    a->ok = false;
+    xSemaphoreGive(a->done_sem);
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  size_t remaining       = a->content_len;
+  size_t bytes_since_yield = 0;
+  bool   ok              = true;
+
+  while (remaining > 0) {
+    size_t want = (remaining < CHUNK) ? remaining : CHUNK;
+    int n;
+    // Retry on EAGAIN (SO_RCVTIMEO expiry) — treat as transient.
+    do {
+      n = recv(a->sockfd, reinterpret_cast<char *>(buf), want, 0);
+    } while (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+
+    if (n <= 0) {
+      ESP_LOGE("sd_upload", "recv error %d (errno %d)", n, errno);
+      ok = false;
+      break;
+    }
+    if (write(a->file_fd, buf, static_cast<size_t>(n)) != n) {
+      ESP_LOGE("sd_upload", "write error (errno %d)", errno);
+      ok = false;
+      break;
+    }
+    remaining          -= static_cast<size_t>(n);
+    bytes_since_yield  += static_cast<size_t>(n);
+    if (bytes_since_yield >= YIELD_EVERY) {
+      vTaskDelay(1);
+      bytes_since_yield = 0;
+    }
+  }
+
+  heap_caps_free(buf);
+  fsync(a->file_fd);
+  close(a->file_fd);  // httpd task must NOT close it again
+  a->ok = ok;
+
+  xSemaphoreGive(a->done_sem);
+  vTaskDelete(nullptr);
+}
+// ---------------------------------------------------------------------------
 
 SDFileServer::SDFileServer(web_server_base::WebServerBase* base)
     : base_(base) {}
@@ -95,7 +165,6 @@ void SDFileServer::handle_upload(AsyncWebServerRequest *request) {
 
   std::string abs_path = this->sd_card_->build_path(path);
 
-  // POSIX open() — avoids newlib stdio call-stack depth.
   int fd = open(abs_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (fd < 0) {
     ESP_LOGE(TAG, "handle_upload: open failed for '%s' (errno %d)", abs_path.c_str(), errno);
@@ -103,63 +172,61 @@ void SDFileServer::handle_upload(AsyncWebServerRequest *request) {
     return;
   }
 
-  // Access the underlying ESP-IDF httpd handle — same technique as handle_download_stream.
   httpd_req_t *req_h = static_cast<httpd_req_t *>(*request);
 
-  // Constants matching ESPHome's OTA handler (web_server_idf.cpp).
-  static constexpr size_t CHUNK_SIZE  = 1460;        // TCP MSS
-  static constexpr size_t YIELD_EVERY = 16 * 1024;   // yield every 16 KB
-
-  // Recv buffer in internal DRAM — FatFS DMA cannot access PSRAM.
-  uint8_t *buf = static_cast<uint8_t *>(
-      heap_caps_malloc(CHUNK_SIZE, MALLOC_CAP_INTERNAL));
-  if (!buf) {
-    ESP_LOGE(TAG, "handle_upload: failed to allocate recv buffer");
+  SemaphoreHandle_t done_sem = xSemaphoreCreateBinary();
+  if (!done_sem) {
     close(fd);
     request->send(503, "application/json", "{ \"error\": \"out of memory\" }");
     return;
   }
 
-  size_t remaining = req_h->content_len;
-  size_t bytes_since_yield = 0;
-  bool ok = true;
-
-  while (remaining > 0) {
-    size_t want = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
-    int n = httpd_req_recv(req_h, reinterpret_cast<char *>(buf), want);
-    if (n <= 0) {
-      ESP_LOGE(TAG, "handle_upload: recv error %d (errno %d)", n, errno);
-      ok = false;
-      break;
-    }
-    if (write(fd, buf, static_cast<size_t>(n)) != n) {
-      ESP_LOGE(TAG, "handle_upload: write error (errno %d)", errno);
-      ok = false;
-      break;
-    }
-    remaining -= static_cast<size_t>(n);
-    bytes_since_yield += static_cast<size_t>(n);
-    if (bytes_since_yield >= YIELD_EVERY) {
-      vTaskDelay(1);  // yield to watchdog / other tasks — same as ESPHome OTA
-      bytes_since_yield = 0;
-    }
+  auto *args = static_cast<UploadTaskArgs *>(malloc(sizeof(UploadTaskArgs)));
+  if (!args) {
+    vSemaphoreDelete(done_sem);
+    close(fd);
+    request->send(503, "application/json", "{ \"error\": \"out of memory\" }");
+    return;
   }
 
-  heap_caps_free(buf);
-  fsync(fd);
-  close(fd);
+  args->sockfd      = httpd_req_to_sockfd(req_h);
+  args->file_fd     = fd;
+  args->content_len = req_h->content_len;
+  args->done_sem    = done_sem;
+  args->ok          = false;
+
+  // Offload recv+write to a dedicated task with its own stack.
+  // The httpd task itself stays shallow (blocked on semaphore), so the deep
+  // FatFS/SDMMC write chain never touches the 4352-byte httpd stack.
+  // Pinned to core 0 to avoid contending with the ESPHome main loop on core 1.
+  if (xTaskCreatePinnedToCore(upload_recv_write_task, "sd_upload",
+                               6144, args, 5, nullptr, 0) != pdPASS) {
+    free(args);
+    vSemaphoreDelete(done_sem);
+    close(fd);
+    request->send(503, "application/json", "{ \"error\": \"failed to create upload task\" }");
+    return;
+  }
+
+  // Block until upload task signals completion (or socket timeout/disconnect).
+  xSemaphoreTake(done_sem, portMAX_DELAY);
+
+  const bool   ok    = args->ok;
+  const size_t total = req_h->content_len;
+  free(args);
+  vSemaphoreDelete(done_sem);
+  // fd was already closed by upload_recv_write_task — do NOT close here.
 
   if (!ok) {
-    unlink(abs_path.c_str());  // remove partial file on error
+    unlink(abs_path.c_str());
     httpd_resp_send_err(req_h, HTTPD_500_INTERNAL_SERVER_ERROR, nullptr);
     return;
   }
 
   this->sd_card_->update_sensors();
   ESP_LOGI(TAG, "Upload complete: %s (%u bytes)", abs_path.c_str(),
-           static_cast<unsigned>(req_h->content_len));
+           static_cast<unsigned>(total));
 
-  // Send 201 via raw httpd API — same pattern as handle_download_stream.
   httpd_resp_set_status(req_h, "201 Created");
   httpd_resp_set_type(req_h, "text/plain");
   httpd_resp_send(req_h, "upload success", HTTPD_RESP_USE_STRLEN);
