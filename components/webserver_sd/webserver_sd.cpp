@@ -11,8 +11,6 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
-#include <sys/socket.h>
-
 #include "esp_heap_caps.h"
 
 #include "esp_http_server.h"
@@ -26,21 +24,22 @@ namespace webserver_sd {
 static const char* TAG = "sd_file_server";
 
 // ---------------------------------------------------------------------------
-// Upload task: recv body from socket + write to SD, all in its own stack.
-// The httpd task stays shallow (blocked on semaphore) while this runs.
+// SD I/O offload tasks: run recv+write / read+send on a dedicated stack so
+// the deep FatFS → SDMMC DMA call chain never lands on the httpd task’s
+// 4 KB stack.  The httpd task blocks on a semaphore while these run.
 // ---------------------------------------------------------------------------
-struct UploadTaskArgs {
-  int sockfd;
-  int file_fd;
-  size_t content_len;
+struct SdIoTaskArgs {
+  httpd_req_t *req;          // httpd request handle (safe: httpd task is blocked)
+  int          file_fd;      // POSIX fd for the SD file
   SemaphoreHandle_t done_sem;
-  bool ok;
+  bool         ok;
 };
 
+// ---- Upload: httpd_req_recv() → write() to SD ----
 static void upload_recv_write_task(void *arg) {
-  auto *a = static_cast<UploadTaskArgs *>(arg);
+  auto *a = static_cast<SdIoTaskArgs *>(arg);
 
-  static constexpr size_t CHUNK      = 1460;
+  static constexpr size_t CHUNK       = 1460;       // TCP MSS
   static constexpr size_t YIELD_EVERY = 16 * 1024;
 
   uint8_t *buf = static_cast<uint8_t *>(
@@ -52,38 +51,66 @@ static void upload_recv_write_task(void *arg) {
     return;
   }
 
-  size_t remaining       = a->content_len;
   size_t bytes_since_yield = 0;
-  bool   ok              = true;
+  bool   ok                = true;
+  int    n;
 
-  while (remaining > 0) {
-    size_t want = (remaining < CHUNK) ? remaining : CHUNK;
-    int n;
-    // Retry on EAGAIN (SO_RCVTIMEO expiry) — treat as transient.
-    do {
-      n = recv(a->sockfd, reinterpret_cast<char *>(buf), want, 0);
-    } while (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
-
-    if (n <= 0) {
-      ESP_LOGE("sd_upload", "recv error %d (errno %d)", n, errno);
-      ok = false;
-      break;
-    }
+  // httpd_req_recv() tracks remaining bytes internally and returns 0 when
+  // the full Content-Length has been consumed.  This keeps httpd state
+  // consistent so httpd_resp_send() works correctly afterward.
+  while ((n = httpd_req_recv(a->req, reinterpret_cast<char *>(buf), CHUNK)) > 0) {
     if (write(a->file_fd, buf, static_cast<size_t>(n)) != n) {
       ESP_LOGE("sd_upload", "write error (errno %d)", errno);
       ok = false;
       break;
     }
-    remaining          -= static_cast<size_t>(n);
-    bytes_since_yield  += static_cast<size_t>(n);
+    bytes_since_yield += static_cast<size_t>(n);
     if (bytes_since_yield >= YIELD_EVERY) {
       vTaskDelay(1);
       bytes_since_yield = 0;
     }
   }
+  if (n < 0) {
+    ESP_LOGE("sd_upload", "recv error %d (errno %d)", n, errno);
+    ok = false;
+  }
 
   heap_caps_free(buf);
   fsync(a->file_fd);
+  close(a->file_fd);  // httpd task must NOT close it again
+  a->ok = ok;
+
+  xSemaphoreGive(a->done_sem);
+  vTaskDelete(nullptr);
+}
+
+// ---- Download: read() from SD → httpd_resp_send_chunk() ----
+static void download_stream_task(void *arg) {
+  auto *a = static_cast<SdIoTaskArgs *>(arg);
+
+  static constexpr size_t BUF_SIZE = 4096;
+
+  uint8_t *buf = static_cast<uint8_t *>(
+      heap_caps_malloc(BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
+  if (!buf) {
+    a->ok = false;
+    xSemaphoreGive(a->done_sem);
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  ssize_t n;
+  bool    ok = true;
+  while ((n = read(a->file_fd, buf, BUF_SIZE)) > 0) {
+    if (httpd_resp_send_chunk(a->req, reinterpret_cast<const char *>(buf), n) != ESP_OK) {
+      ok = false;
+      break;
+    }
+  }
+  if (ok)
+    httpd_resp_send_chunk(a->req, nullptr, 0);  // terminate chunked transfer
+
+  heap_caps_free(buf);
   close(a->file_fd);  // httpd task must NOT close it again
   a->ok = ok;
 
@@ -181,7 +208,7 @@ void SDFileServer::handle_upload(AsyncWebServerRequest *request) {
     return;
   }
 
-  auto *args = static_cast<UploadTaskArgs *>(malloc(sizeof(UploadTaskArgs)));
+  auto *args = static_cast<SdIoTaskArgs *>(malloc(sizeof(SdIoTaskArgs)));
   if (!args) {
     vSemaphoreDelete(done_sem);
     close(fd);
@@ -189,9 +216,8 @@ void SDFileServer::handle_upload(AsyncWebServerRequest *request) {
     return;
   }
 
-  args->sockfd      = httpd_req_to_sockfd(req_h);
+  args->req         = req_h;
   args->file_fd     = fd;
-  args->content_len = req_h->content_len;
   args->done_sem    = done_sem;
   args->ok          = false;
 
@@ -322,10 +348,6 @@ void SDFileServer::handle_download_stream(AsyncWebServerRequest *request,
                                           size_t file_size) const {
   std::string abs_path = this->sd_card_->build_path(path);
 
-  // Use POSIX open/read instead of fopen/fread to avoid the hidden newlib
-  // stdio buffer that malloc allocates and may land in PSRAM.  On ESP32-S3
-  // the SDMMC AHB-DMA cannot access PSRAM, which causes a "Cache error /
-  // MMU entry fault" crash.
   int fd = open(abs_path.c_str(), O_RDONLY);
   if (fd < 0) {
     ESP_LOGE(TAG, "handle_download_stream: open failed for '%s' (errno %d)", path.c_str(), errno);
@@ -336,39 +358,48 @@ void SDFileServer::handle_download_stream(AsyncWebServerRequest *request,
   std::string fname = Path::file_name(path);
   std::string disposition = "attachment; filename=\"" + fname + "\"";
 
-  // Use the underlying httpd_req_t directly for chunked transfer —
-  // the ESP-IDF AsyncWebServerRequest wrapper has no beginChunkedResponse().
   httpd_req_t *req_h = static_cast<httpd_req_t *>(*request);
   httpd_resp_set_status(req_h, "200 OK");
   httpd_resp_set_type(req_h, mime.c_str());
   httpd_resp_set_hdr(req_h, "Content-Disposition", disposition.c_str());
 
-  // Allocate the read buffer from internal DMA-capable DRAM (not the task
-  // stack, not PSRAM) so that FatFS can DMA directly into it for aligned
-  // sector reads without triggering a cache fault.
-  const size_t BUF_SIZE = 4096;
-  uint8_t *buf = static_cast<uint8_t *>(
-      heap_caps_malloc(BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
-  if (!buf) {
-    ESP_LOGE(TAG, "handle_download_stream: failed to allocate read buffer");
+  // Offload read()+send_chunk() to a task — the deep FatFS/SDMMC read chain
+  // would overflow the httpd task stack, same as upload writes.
+  SemaphoreHandle_t done_sem = xSemaphoreCreateBinary();
+  if (!done_sem) {
     close(fd);
     request->send(503, "application/json", "{ \"error\": \"out of memory\" }");
     return;
   }
 
-  ssize_t n;
-  bool ok = true;
-  while ((n = read(fd, buf, BUF_SIZE)) > 0) {
-    if (httpd_resp_send_chunk(req_h, reinterpret_cast<const char *>(buf), n) != ESP_OK) {
-      ESP_LOGW(TAG, "Streaming download: client disconnected for '%s'", path.c_str());
-      ok = false;
-      break;
-    }
+  auto *args = static_cast<SdIoTaskArgs *>(malloc(sizeof(SdIoTaskArgs)));
+  if (!args) {
+    vSemaphoreDelete(done_sem);
+    close(fd);
+    request->send(503, "application/json", "{ \"error\": \"out of memory\" }");
+    return;
   }
-  if (ok)
-    httpd_resp_send_chunk(req_h, nullptr, 0);  // terminate chunked transfer
-  heap_caps_free(buf);
-  close(fd);
+
+  args->req      = req_h;
+  args->file_fd  = fd;
+  args->done_sem = done_sem;
+  args->ok       = false;
+
+  if (xTaskCreatePinnedToCore(download_stream_task, "sd_download",
+                               6144, args, 5, nullptr, 0) != pdPASS) {
+    free(args);
+    vSemaphoreDelete(done_sem);
+    close(fd);
+    request->send(503, "application/json", "{ \"error\": \"failed to create download task\" }");
+    return;
+  }
+
+  // Block until download task signals completion.
+  xSemaphoreTake(done_sem, portMAX_DELAY);
+  free(args);
+  vSemaphoreDelete(done_sem);
+  // fd was already closed by download_stream_task.
+
   ESP_LOGI(TAG, "Streaming download: %s (%u bytes)", path.c_str(), static_cast<unsigned>(file_size));
 }
 
