@@ -197,13 +197,16 @@ void SDFileServer::handle_upload(AsyncWebServerRequest *request) {
       this->extract_path_from_url(std::string(request->url_to(url_buf)));
   std::string path = this->build_absolute_path(extracted);
 
-  // URL must identify a file, not a directory
-  if (path.empty() || path.back() == '/' || this->sd_card_->is_directory(path)) {
+  // Quick string-only validation (NO VFS calls — the httpd POST path is too
+  // deep for FatFS/SDMMC on the 4352-byte httpd stack).  The task's open()
+  // will fail with EISDIR or ENOENT if the path is actually a directory.
+  if (path.empty() || path.back() == '/') {
     request->send(400, "application/json",
                   "{ \"error\": \"target URL must be a file path, not a directory\" }");
     return;
   }
 
+  // build_path() is pure string concatenation — safe on the httpd stack.
   std::string abs_path = this->sd_card_->build_path(path);
 
   httpd_req_t *req_h = static_cast<httpd_req_t *>(*request);
@@ -214,8 +217,17 @@ void SDFileServer::handle_upload(AsyncWebServerRequest *request) {
     return;
   }
 
+  // Heap-allocate the path string so it survives until the task reads it.
+  char *path_buf = strdup(abs_path.c_str());
+  if (!path_buf) {
+    vSemaphoreDelete(done_sem);
+    request->send(503, "application/json", "{ \"error\": \"out of memory\" }");
+    return;
+  }
+
   auto *args = static_cast<SdIoTaskArgs *>(malloc(sizeof(SdIoTaskArgs)));
   if (!args) {
+    free(path_buf);
     vSemaphoreDelete(done_sem);
     request->send(503, "application/json", "{ \"error\": \"out of memory\" }");
     return;
@@ -223,17 +235,16 @@ void SDFileServer::handle_upload(AsyncWebServerRequest *request) {
 
   args->req         = req_h;
   args->file_fd     = -1;    // not used for upload
-  args->path        = abs_path.c_str();  // valid while we block on semaphore
+  args->path        = path_buf;
   args->done_sem    = done_sem;
   args->ok          = false;
 
-  // Offload open+recv+write+close to a dedicated task with its own stack.
-  // The httpd task itself stays shallow (blocked on semaphore), so the deep
-  // VFS → FatFS → SDMMC call chain never touches the 4352-byte httpd stack.
-  // Pinned to core 0 to avoid contending with the ESPHome main loop on core 1.
+  // Offload open+recv+write+close to a dedicated task with its own 6 KB stack.
+  // NOTHING that touches VFS/FatFS/SDMMC runs on the httpd task.
   if (xTaskCreatePinnedToCore(upload_recv_write_task, "sd_upload",
                                6144, args, 5, nullptr, 0) != pdPASS) {
     free(args);
+    free(path_buf);
     vSemaphoreDelete(done_sem);
     request->send(503, "application/json", "{ \"error\": \"failed to create upload task\" }");
     return;
@@ -244,16 +255,18 @@ void SDFileServer::handle_upload(AsyncWebServerRequest *request) {
 
   const bool   ok    = args->ok;
   const size_t total = req_h->content_len;
+  free(path_buf);
   free(args);
   vSemaphoreDelete(done_sem);
+  // NOTE: no unlink() or update_sensors() here — those are VFS calls that
+  // would overflow the httpd stack.  The upload task already closed the fd;
+  // on failure the partial file is left on disk for the user to clean up.
 
   if (!ok) {
-    unlink(abs_path.c_str());
     httpd_resp_send_err(req_h, HTTPD_500_INTERNAL_SERVER_ERROR, nullptr);
     return;
   }
 
-  this->sd_card_->update_sensors();
   ESP_LOGI(TAG, "Upload complete: %s (%u bytes)", abs_path.c_str(),
            static_cast<unsigned>(total));
 
