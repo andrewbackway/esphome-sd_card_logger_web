@@ -1,0 +1,168 @@
+substitutions:
+  device_name: sd_card_logger
+  wifi_ssid: !secret wifi_ssid
+  wifi_password: !secret wifi_password
+
+esphome:
+  name: ${device_name}
+  friendly_name: "SD Card Logger"
+
+esp32:
+  board: lolin_s3_pro
+  variant: esp32s3
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_FATFS_LFN_HEAP: "y"   # heap-allocate LFN buffer, keeps task stacks safe
+      CONFIG_FATFS_LFN: "2"        # 2 = heap allocation mode (1 = stack)
+
+external_components:
+  - source: github://andrewbackway/esphome-sd_card_web
+    components: [sd_card, sd_logger, webserver_sd]
+
+logger:
+  level: DEBUG
+
+wifi:
+  ssid: ${wifi_ssid}
+  password: ${wifi_password}
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "Australia/Melbourne"
+    servers:
+      - pool.ntp.org
+
+sd_card:
+  id: sd_card1
+  cmd_pin: 11   # MOSI / CMD
+  clk_pin: 12   # SCK  (onboard TF slot)
+  data0_pin: 13 # MISO / DATA0
+  mode_1bit: true  # only 3 lines physically wired on LOLIN S3 Pro
+
+web_server:
+  port: 80
+
+webserver_sd:
+  id: file_server
+  sd_card_id: sd_card1
+  url_prefix: "file"
+  root_path: "/"
+  enable_deletion: true
+  enable_download: true
+  enable_upload: true
+
+sd_logger:
+  id: logger
+  sd_card_id: sd_card1
+  time_id: sntp_time
+  queue_size: 50       # max packets buffered before drops
+  task_priority: 1     # FreeRTOS priority (0 = lowest)
+  # Cloud upload — remove these keys to disable the upload task entirely
+  upload_url: "https://example.com/api/upload"
+  bearer_token: !secret upload_token
+  ping_url: "https://example.com/ping"
+  ping_interval: 30s
+  ping_timeout: 5s
+  backoff_initial: 30s
+  backoff_max: 15min
+  sync_online:
+    name: "Cloud Sync Online"
+  sync_sending_backlog:
+    name: "Cloud Sync Backlog"
+  logs:
+    # ── Engine RPM + vehicle speed in one daily CSV ────────────────────────────
+    - name: "Vehicle Data"
+      folder: "vehicle"
+      file_prefix: "vehicle"
+      log_interval: 1s
+      rotation: daily
+      sensors:
+        - sensor_id: engine_rpm
+          format: "%.0f"
+        - sensor_id: vehicle_speed
+          format: "%.1f"
+        - sensor_id: gear_pos    # text sensor — format ignored
+
+    # ── Gear changes only — size rotation, 10 MB per file ─────────────────────
+    - name: "Gear Log"
+      folder: "gear"
+      file_prefix: "gear"
+      log_interval: 5s
+      rotation: size
+      max_file_size: 10485760   # 10 MB
+      sensors:
+        - sensor_id: gear_pos
+
+# ── Sensors ───────────────────────────────────────────────────────────────────
+sensor:
+  # Simulated engine RPM — replace with your real sensor (e.g. pulse_counter)
+  - platform: template
+    id: engine_rpm
+    name: "Engine RPM"
+    unit_of_measurement: "rpm"
+    accuracy_decimals: 0
+    update_interval: 500ms
+    lambda: "return (float)(millis() % 6000);"
+
+  # Simulated vehicle speed — replace with your real sensor
+  - platform: template
+    id: vehicle_speed
+    name: "Vehicle Speed"
+    unit_of_measurement: "km/h"
+    accuracy_decimals: 1
+    update_interval: 500ms
+    lambda: "return (float)((millis() / 1000) % 120);"
+
+  # Heap monitor — useful for T4/T13 non-blocking tests
+  - platform: template
+    name: "Free Heap"
+    unit_of_measurement: "B"
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: "return (float)esp_get_free_heap_size();"
+
+  # SD card used space
+  - platform: sd_card
+    sd_card_id: sd_card
+    type: used_space
+    name: "SD Used (GB)"
+    filters:
+      - lambda: return (float)sd_card::convertBytes((uint64_t)x, sd_card::MemoryUnits::GigaByte);
+
+  - platform: sd_card
+    sd_card_id: sd_card
+    type: total_space
+    name: "SD Card Capacity (GB)"
+    filters:
+      - lambda: return (float)sd_card::convertBytes((uint64_t)x, sd_card::MemoryUnits::GigaByte);
+
+  - platform: sd_card
+    sd_card_id: sd_card
+    type: free_space
+    name: "SD Card Remaining (GB)"
+    filters:
+      - lambda: return (float)sd_card::convertBytes((uint64_t)x, sd_card::MemoryUnits::GigaByte);
+
+text_sensor:
+  # Simulated gear position — replace with your real CAN/OBD sensor
+  - platform: template
+    id: gear_pos
+    name: "Gear Position"
+    update_interval: 1s
+    lambda: |-
+      static const char* gears[] = {"P","R","N","D","3","2","L"};
+      return std::string(gears[(millis() / 5000) % 7]);
+
+  # SD card type
+  - platform: sd_card
+    sd_card_id: sd_card
+    sd_card_type:
+      name: "SD Card Type"
+
+binary_sensor:
+  - platform: template
+    name: "SD Card Present"
+    lambda: "return id(sd_card).is_directory(\"/\");"
+
