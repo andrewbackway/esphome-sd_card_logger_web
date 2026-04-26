@@ -1,6 +1,3 @@
-This version integrates the hardware driver and web interface configurations, keeping the focus on the high-performance batching engine while providing a complete "copy-paste" reference for the entire suite.
-
----
 
 # ESPHome SD Logger & Web Suite
 
