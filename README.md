@@ -1,7 +1,7 @@
 
 # ESPHome SD Logger & Web Suite
 
-A high-performance, non-blocking logging solution for **ESP32** and **ESP32-S3** (ESP-IDF). This suite is designed to handle high-frequency sensor data without impacting the stability of your ESPHome main loop.
+A high-performance, non-blocking logging solution for **ESP32-S3** (ESP-IDF). This suite is designed to handle high-frequency sensor data without impacting the stability of your ESPHome main loop.
 
 ## 🚀 The Core Engine: Asynchronous Batching
 
@@ -39,6 +39,14 @@ sd_card:
 This is where you define your data structure. You can create multiple "Log Groups" with different sensors and intervals.
 
 ```yaml
+time: # requried for accurate timestamps, logging will wait until time is acquired.
+  - platform: sntp
+    id: sntp_time
+    servers:
+      - 0.au.pool.ntp.org
+      - 1.au.pool.ntp.org
+      - 2.au.pool.ntp.org
+
 sd_logger:
   sd_card_id: sd_card_1
   time_id: sntp_time
@@ -67,7 +75,7 @@ sd_logger:
 ```
 
 ### Log Integrity (The Catalog)
-The logger maintains a `catalog.bin` file. It tracks if files were closed cleanly. If the device loses power, the logger identifies the "dirty" file on reboot and marks it as `CORRUPT` to prevent data loss in the new log session.
+The logger maintains a `catalog.bin` file. This tracks if files were closed cleanly. If the device loses power, the logger identifies the "dirty" file on reboot and marks it as `CORRUPT` to prevent data loss in the new log session - Experimental feature.
 
 ---
 
