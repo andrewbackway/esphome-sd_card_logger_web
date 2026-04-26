@@ -96,9 +96,20 @@ webserver_sd:
 
 ## 🏗 Full Implementation Example
 
-Refer to example.yaml
+Refer to [example.yaml](example.yaml)
 
-Based on previous work from [n-serrette/esphome_sd_card](https://github.com/n-serrette/esphome_sd_card)
+## The "Large Card" Power Trap
+If you are using SD cards larger than 2GB (SDHC/SDXC), be aware of power stability.
+
+The Issue: High-capacity cards draw significantly more peak current during write operations (often exceeding 100mA–200mA spikes).
+
+USB Testing Warning: When powering your S3 Pro solely from a laptop or PC USB port, these current spikes can cause the ESP32-S3 to brown out or reboot during a write cycle.
+
+The Fix: If you experience random reboots during logging, test with a dedicated 2A+ power supply or a powered USB hub. Do not rely on standard PC USB ports for final testing with SDXC cards.
+
 
 ## License
 MIT - [Andrew Backway](https://github.com/andrewbackway)
+
+Based on previous work from [n-serrette/esphome_sd_card](https://github.com/n-serrette/esphome_sd_card)
+
