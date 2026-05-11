@@ -1,5 +1,5 @@
 
-# ESPHome SD Card Logger and Web Server Extension
+# ESPHome SD Card Logger & Web Server
 
 A high-performance, non-blocking logging solution for **ESP32-S3** (ESP-IDF). This suite is designed to handle high-frequency sensor data without impacting the stability of your ESPHome main loop.
 
