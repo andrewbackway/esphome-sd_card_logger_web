@@ -13,7 +13,7 @@ The `sd_logger` component uses a **producer-consumer architecture** to protect y
 
 ---
 
-## 🛠 1. `sd_card` (The Hardware Driver)
+## 🛠 `sd_card` (The Hardware Driver)
 
 The driver uses the native ESP-IDF SDMMC peripheral. It supports **FAT32** and **exFAT** (essential for 32GB+ cards).
 
@@ -34,7 +34,7 @@ sd_card:
 
 ---
 
-## 📊 2. `sd_logger` (Logs & Batching Config)
+## 📊 `sd_logger` (Logs & Batching Config)
 
 This is where you define your data structure. You can create multiple "Log Groups" with different sensors and intervals.
 
@@ -79,7 +79,7 @@ The logger maintains a `catalog.bin` file. This tracks if files were closed clea
 
 ---
 
-## 🌐 3. `webserver_sd` (The Web Interface)
+## 🌐 `webserver_sd` (The Web Interface)
 
 Access and manage your log files directly from your browser at `http://<ip-address>/file/`.
 
