@@ -5,12 +5,14 @@ from esphome.components import binary_sensor as binary_sensor_comp
 from esphome.components import sensor as sensor_comp
 from esphome.components import text_sensor as text_sensor_comp
 from esphome.const import CONF_ID
+from esphome import automation
 from .. import sd_card
 
 DEPENDENCIES = ["sd_card"]
 AUTO_LOAD = ["binary_sensor"]
 
 CONF_SD_LOGGER_ID = "sd_logger_id"
+CONF_ENABLED = "enabled"
 
 sd_logger_ns = cg.esphome_ns.namespace("sd_logger")
 SdLogger = sd_logger_ns.class_("SdLogger", cg.Component)
@@ -75,6 +77,7 @@ LOG_SCHEMA = cv.Schema(
         cv.Optional(CONF_MAX_FILE_SIZE, default=52428800): cv.int_range(min=1024),
         cv.Optional(CONF_SENSORS, default=[]):        cv.ensure_list(NUMERIC_SLOT_SCHEMA),
         cv.Optional(CONF_TEXT_SENSORS, default=[]):   cv.ensure_list(TEXT_SLOT_SCHEMA),
+        cv.Optional(CONF_ENABLED, default=True): cv.templatable(cv.boolean),
     }
 )
 
@@ -153,6 +156,11 @@ async def to_code(config):
 
     # ── Register logs ────────────────────────────────────────────────────────
     for log_cfg in config.get(CONF_LOGS, []):
+        enabled = await cg.templatable(
+            log_cfg[CONF_ENABLED],
+            [],
+            cg.bool_
+        )
         rot = ROTATION_OPTIONS[log_cfg[CONF_ROTATION]]
         cg.add(
             var.begin_log(
@@ -163,6 +171,7 @@ async def to_code(config):
                 log_cfg[CONF_LOG_INTERVAL].total_milliseconds,
                 rot,
                 log_cfg[CONF_MAX_FILE_SIZE],
+                enabled,
             )
         )
         for slot in log_cfg.get(CONF_SENSORS, []):

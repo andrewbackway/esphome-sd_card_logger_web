@@ -126,7 +126,8 @@ class SdLogger : public Component {
   // ── Log registration — called from generated __init__.py code ───────────────
   void begin_log(const char *name, const char *folder, const char *file_prefix,
                  const char *header, uint32_t interval_ms,
-                 uint8_t rotation, size_t max_file_size);
+                 uint8_t rotation, size_t max_file_size,
+                std::function<bool()> enabled);
   void add_log_numeric_slot(sensor::Sensor *s, const char *format);
   void add_log_text_slot(text_sensor::TextSensor *s);
   void finalize_log();

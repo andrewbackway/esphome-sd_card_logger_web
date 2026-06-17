@@ -252,7 +252,8 @@ void SdLogger::loop() {
 
 void SdLogger::begin_log(const char *name, const char *folder, const char *file_prefix,
                           const char *header, uint32_t interval_ms,
-                          uint8_t rotation, size_t max_file_size) {
+                          uint8_t rotation, size_t max_file_size,
+                         std::function<bool()> enabled) {
   this->pending_log_ = new LogEntry();
   this->pending_log_->config.name            = name;
   this->pending_log_->config.folder          = folder;
@@ -261,6 +262,7 @@ void SdLogger::begin_log(const char *name, const char *folder, const char *file_
   this->pending_log_->config.log_interval_ms = interval_ms;
   this->pending_log_->config.rotation        = static_cast<RotationPolicy>(rotation);
   this->pending_log_->config.max_file_size   = max_file_size;
+   this->pending_log_->config.enabled         = std::move(enabled);
 }
 
 void SdLogger::add_log_numeric_slot(sensor::Sensor *s, const char *format) {
@@ -312,7 +314,9 @@ void SdLogger::task_logging_entry_(void *param) {
   // Build prefix -> LogConfig lookup (read-only after setup, no lock needed)
   std::map<std::string, const LogConfig *> sink_map;
   for (const auto &entry : self->logs_)
-    sink_map[entry.config.file_prefix] = &entry.config;
+    if (entry.config.enabled && entry.config.enabled()) {
+      sink_map[entry.config.file_prefix] = &entry.config;
+    }
 
   const std::string cat_path = self->sd_card_->build_path(CATALOG_REL);
 
