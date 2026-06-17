@@ -11,6 +11,7 @@
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
 #include "driver/sdmmc_types.h"
+#include "driver/gpio.h"
 
 int constexpr SD_OCR_SDHC_CAP = (1 << 30);  // value defined in esp-idf/components/SdCard/include/sd_protocol_defs.h
 
@@ -42,6 +43,8 @@ void SdCard::setup() {
       .format_if_mount_failed = false, .max_files = 5, .allocation_unit_size = 16 * 1024};
 
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+  host.timeout_ms = 3000; 
+  host.max_freq_khz = 5000;  // temp testing for larger SD cards
   sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
 
   if (this->mode_1bit_) {
@@ -62,7 +65,17 @@ void SdCard::setup() {
   }
 #endif
 
-  slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+  //slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+  slot_config.flags &= ~SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+  // Set drive strength to maximum (40 mA) for all SDMMC pins
+  gpio_set_drive_capability((gpio_num_t)this->clk_pin_, GPIO_DRIVE_CAP_3);
+  gpio_set_drive_capability((gpio_num_t)this->cmd_pin_, GPIO_DRIVE_CAP_3);
+  gpio_set_drive_capability((gpio_num_t)this->data0_pin_, GPIO_DRIVE_CAP_3);
+  // If you later use 4‑bit mode, also add data1, data2, data3
+
+  vTaskDelay(pdMS_TO_TICKS(100));
 
   auto ret = esp_vfs_fat_sdmmc_mount(MOUNT_POINT.c_str(), &host, &slot_config, &mount_config, &this->card_);
 
