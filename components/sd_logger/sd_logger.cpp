@@ -314,15 +314,9 @@ void SdLogger::task_logging_entry_(void *param) {
   // Build prefix -> LogConfig lookup (read-only after setup, no lock needed)
   std::map<std::string, const LogConfig *> sink_map;
   for (const auto &entry : self->logs_) {
-    bool is_enabled = true;
-    if (entry.config.enabled) {
-      is_enabled = entry.config.enabled();  // lambda must not throw
-    }
-    if (is_enabled) {
-      sink_map[entry.config.file_prefix] = &entry.config;
-    }
+    sink_map[entry.config.file_prefix] = &entry.config;
   }
-
+  
   const std::string cat_path = self->sd_card_->build_path(CATALOG_REL);
 
   // Per-prefix open file context (task-local, no sharing with other tasks)
