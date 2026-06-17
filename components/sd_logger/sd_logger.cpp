@@ -316,13 +316,7 @@ void SdLogger::task_logging_entry_(void *param) {
   for (const auto &entry : self->logs_) {
     bool is_enabled = true;
     if (entry.config.enabled) {
-      try {
-        is_enabled = entry.config.enabled();
-      } catch (...) {
-        is_enabled = false;
-        ESP_LOGW(TAG, "enabled lambda threw exception for %s, excluding from task",
-                 entry.config.file_prefix.c_str());
-      }
+      is_enabled = entry.config.enabled();  // lambda must not throw
     }
     if (is_enabled) {
       sink_map[entry.config.file_prefix] = &entry.config;
