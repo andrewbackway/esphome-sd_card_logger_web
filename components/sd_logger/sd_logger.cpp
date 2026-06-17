@@ -313,10 +313,21 @@ void SdLogger::task_logging_entry_(void *param) {
 
   // Build prefix -> LogConfig lookup (read-only after setup, no lock needed)
   std::map<std::string, const LogConfig *> sink_map;
-  for (const auto &entry : self->logs_)
-    if (entry.config.enabled && entry.config.enabled()) {
+  for (const auto &entry : self->logs_) {
+    bool is_enabled = true;
+    if (entry.config.enabled) {
+      try {
+        is_enabled = entry.config.enabled();
+      } catch (...) {
+        is_enabled = false;
+        ESP_LOGW(TAG, "enabled lambda threw exception for %s, excluding from task",
+                 entry.config.file_prefix.c_str());
+      }
+    }
+    if (is_enabled) {
       sink_map[entry.config.file_prefix] = &entry.config;
     }
+  }
 
   const std::string cat_path = self->sd_card_->build_path(CATALOG_REL);
 

@@ -7,6 +7,7 @@
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "../sd_card/sd_card.h"
+#include <functional>
 
 #include <vector>
 #include <string>
@@ -86,6 +87,7 @@ struct LogConfig {
   RotationPolicy          rotation;
   size_t                  max_file_size;   // bytes; only evaluated when rotation == SIZE
   std::vector<SensorSlot> slots;
+  std::function<bool()> enabled; // lambda evaluated before logging; if not set, always enabled
 };
 
 // ── LogEntry ──────────────────────────────────────────────────────────────────
