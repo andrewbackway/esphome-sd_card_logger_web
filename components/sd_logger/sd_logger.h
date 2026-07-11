@@ -98,6 +98,8 @@ struct LogEntry {
 // ── SdLogger ──────────────────────────────────────────────────────────────────
 class SdLogger : public Component {
  public:
+  void set_timestamp_format(const std::string &format) { this->timestamp_format_ = format; }
+
   // ── Hardware + time wiring ──────────────────────────────────────────────────
   void set_sd_card(sd_card::SdCard *sd) { this->sd_card_ = sd; }
   void set_time(time::RealTimeClock *t) { this->time_ = t; }
@@ -140,6 +142,7 @@ class SdLogger : public Component {
   float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
 
  protected:
+  std::string timestamp_format_{"%u"};
   // ── Helpers ──────────────────────────────────────────────────────────────────
   bool time_valid_() const;
   void publish_sync_online_(bool v);

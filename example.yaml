@@ -62,8 +62,9 @@ sd_logger:
   time_id: sntp_time
   queue_size: 50
   task_priority: 1
-  # experimental features for cloud sync (not implemented yet)
+  #timestamp_format: "%Y-%m-%d %H:%M:%S"  # Optional: Standard strftime formatting, defaults to %s (Unix epoch integer)
   #fsync_interval: 30s
+  # experimental features for cloud sync (not implemented yet)
   #upload_url: "https://example.com/api/upload"
   #bearer_token: "TODO"
   #ping_url: "https://example.com/ping"

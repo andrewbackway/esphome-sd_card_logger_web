@@ -30,6 +30,7 @@ CONF_PING_TIMEOUT         = "ping_timeout"
 CONF_FSYNC_INTERVAL       = "fsync_interval"
 CONF_SYNC_ONLINE          = "sync_online"
 CONF_SYNC_SENDING_BACKLOG = "sync_sending_backlog"
+CONF_TIMESTAMP_FORMAT = "timestamp_format"
 
 # ── logs: list keys ───────────────────────────────────────────────────────────
 CONF_LOGS         = "logs"
@@ -82,6 +83,7 @@ CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(SdLogger),
 
+        cv.Optional(CONF_TIMESTAMP_FORMAT, default="%s"): cv.string_strict,
         # Hardware + time
         cv.Required(sd_card.CONF_SD_CARD_ID): cv.use_id(sd_card.SdCard),
         cv.Required(CONF_TIME_ID): cv.use_id(time_comp.RealTimeClock),
@@ -131,6 +133,7 @@ async def to_code(config):
     cg.add(var.set_task_priority(config[CONF_TASK_PRIORITY]))
     cg.add(var.set_fsync_interval_ms(config[CONF_FSYNC_INTERVAL].total_milliseconds))
     cg.add(var.set_path(config[CONF_PATH]))
+    cg.add(var.set_timestamp_format(config[CONF_TIMESTAMP_FORMAT]))
 
     if config[CONF_UPLOAD_URL]:
         cg.add(var.set_upload_url(config[CONF_UPLOAD_URL]))

@@ -215,7 +215,8 @@ void SdLogger::loop() {
 
     // Build the CSV row: timestamp,val1,val2,...
     char row[LOG_PACKET_ROW_LEN];
-    int  pos = snprintf(row, sizeof(row), "%u", ts);
+    std::string time_str = t.strftime(this->timestamp_format_);
+    int pos = snprintf(row, sizeof(row), "%s", time_str.c_str());
 
     for (const auto &slot : entry.config.slots) {
       if (pos >= static_cast<int>(sizeof(row)) - 2) break;  // guard overflow
