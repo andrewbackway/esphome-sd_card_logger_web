@@ -50,6 +50,7 @@ time: # requried for accurate timestamps, logging will wait until time is acquir
 sd_logger:
   sd_card_id: sd_card_1
   time_id: sntp_time
+  #timestamp_format: "%Y-%m-%d %H:%M:%S"  # Optional: Standard strftime formatting, defaults to %s (Unix epoch integer)
   fsync_interval: 30s        # How often to physically commit data to the card
   
   logs:
