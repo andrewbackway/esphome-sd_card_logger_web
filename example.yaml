@@ -1,7 +1,7 @@
 esphome:
   name: espSDCardLogger
   friendly_name: "SD Card Logger"
-  min_version: 2026.04.0
+  min_version: 2026.7.3
   name_add_mac_suffix: false
 
 esp32:

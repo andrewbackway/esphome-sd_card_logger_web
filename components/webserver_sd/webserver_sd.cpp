@@ -1,5 +1,6 @@
 #include "webserver_sd.h"
 
+#include <array>
 #include <cerrno>
 #include <cstdio>
 #include <fcntl.h>
@@ -139,8 +140,9 @@ SDFileServer::SDFileServer(web_server_base::WebServerBase* base)
 void SDFileServer::setup() { this->base_->add_handler(this); }
 
 void SDFileServer::dump_config() {
+  std::array<char, network::USE_ADDRESS_BUFFER_SIZE> address_buffer{};
   ESP_LOGCONFIG(TAG, "Webserver SD:");
-  ESP_LOGCONFIG(TAG, "  Address: %s:%u", network::get_use_address(),
+  ESP_LOGCONFIG(TAG, "  Address: %s:%u", network::get_use_address_to(address_buffer),
                 this->base_->get_port());
   ESP_LOGCONFIG(TAG, "  Url Prefix: %s", this->url_prefix_.c_str());
   ESP_LOGCONFIG(TAG, "  Root Path: %s", this->sd_path_.c_str());
